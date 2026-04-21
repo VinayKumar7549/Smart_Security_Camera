@@ -16,7 +16,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { API_BASE, type PublicUser } from "@/lib/api";
 
-export default function OperatorLoginPage() {
+/** Only this account may sign in here (must match server-seeded admin). */
+const ADMIN_USERNAME = "admin";
+const ADMIN_PASSWORD = "1234";
+
+export default function AdminLoginPage() {
   const router = useRouter();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -26,18 +30,38 @@ export default function OperatorLoginPage() {
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError(null);
+
+    const u = username.trim();
+    const p = password.trim();
+    if (u !== ADMIN_USERNAME || p !== ADMIN_PASSWORD) {
+      setError("Invalid credentials");
+      return;
+    }
+
     setSubmitting(true);
     try {
       const res = await fetch(`${API_BASE}/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          username: username.trim(),
-          password,
+          username: u,
+          password: p,
         }),
       });
       if (!res.ok) {
-        setError("Invalid credentials");
+        const detail = await res.json().catch(() => null);
+        const msg =
+          detail &&
+          typeof detail === "object" &&
+          "detail" in detail &&
+          typeof (detail as { detail: unknown }).detail === "string"
+            ? (detail as { detail: string }).detail
+            : null;
+        setError(
+          msg
+            ? `Login failed: ${msg}`
+            : "Invalid credentials — is the API running and reachable?"
+        );
         return;
       }
       const data: unknown = await res.json();
@@ -52,14 +76,14 @@ export default function OperatorLoginPage() {
       }
       const token = (data as { token: string }).token;
       const user = (data as { user: PublicUser }).user;
+      if (!user.is_admin) {
+        setError("This account is not an administrator.");
+        return;
+      }
       localStorage.setItem("token", token);
       localStorage.setItem("user", JSON.stringify(user));
       localStorage.setItem("auth", "true");
-      if (user.is_admin) {
-        router.push("/admin");
-      } else {
-        router.push("/dashboard");
-      }
+      router.push("/admin");
     } catch {
       setError("Could not reach the server.");
     } finally {
@@ -71,41 +95,39 @@ export default function OperatorLoginPage() {
     <div className="flex min-h-screen items-center justify-center bg-gray-50 px-4 py-10 dark:bg-gray-900">
       <Card className="w-full max-w-md shadow-md">
         <CardHeader className="space-y-1">
-          <CardTitle className="text-2xl font-semibold tracking-tight">Sign in</CardTitle>
+          <CardTitle className="text-2xl font-semibold tracking-tight">
+            Administrator sign in
+          </CardTitle>
           <CardDescription>
-            Operator access — use the account your administrator created. Admins should use{" "}
-            <a href="/admin/login" className="font-medium text-primary underline underline-offset-4">
-              admin sign-in
-            </a>
-            .
+            Smart Security — admin console only. Use the administrator account.
           </CardDescription>
         </CardHeader>
         <form onSubmit={(e) => void handleSubmit(e)}>
           <CardContent className="space-y-5">
             <div className="space-y-2">
-              <Label htmlFor="username">Username</Label>
+              <Label htmlFor="admin-username">Username</Label>
               <Input
-                id="username"
+                id="admin-username"
                 name="username"
                 type="text"
                 autoComplete="username"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                placeholder="Username"
+                placeholder="admin"
                 className="rounded-xl shadow-sm"
                 required
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="password">Password</Label>
+              <Label htmlFor="admin-password">Password</Label>
               <Input
-                id="password"
+                id="admin-password"
                 name="password"
                 type="password"
                 autoComplete="current-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="Password"
+                placeholder="••••"
                 className="rounded-xl shadow-sm"
                 required
               />
@@ -125,7 +147,7 @@ export default function OperatorLoginPage() {
               disabled={submitting}
               className="w-full rounded-xl shadow-md sm:w-auto"
             >
-              {submitting ? "Signing in…" : "Login"}
+              {submitting ? "Signing in…" : "Sign in as admin"}
             </Button>
           </CardFooter>
         </form>

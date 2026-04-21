@@ -2,7 +2,14 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Bell, Clapperboard, LayoutDashboard, Menu } from "lucide-react";
+import {
+  Bell,
+  Clapperboard,
+  LayoutDashboard,
+  Menu,
+  Settings,
+  Shield,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { ModeToggle } from "@/components/mode-toggle";
@@ -22,16 +29,22 @@ const nav = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/dashboard/alerts", label: "Alerts", icon: Bell },
   { href: "/dashboard/recordings", label: "Recordings", icon: Clapperboard },
+  { href: "/dashboard/settings", label: "Settings", icon: Settings },
 ] as const;
 
 function navActive(pathname: string, href: string) {
   if (href === "/dashboard") {
     return pathname === "/dashboard" || pathname === "/dashboard/";
   }
+  if (href === "/admin") {
+    return pathname.startsWith("/admin");
+  }
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
 function pageTitle(pathname: string) {
+  if (pathname.startsWith("/admin")) return "Admin";
+  if (pathname.startsWith("/dashboard/settings")) return "Settings";
   if (pathname.startsWith("/dashboard/alerts")) return "Alerts";
   if (pathname.startsWith("/dashboard/recordings")) return "Recordings";
   return "Dashboard";
@@ -41,10 +54,12 @@ function SidebarNav({
   pathname,
   onNavigate,
   className,
+  showAdmin,
 }: {
   pathname: string;
   onNavigate?: () => void;
   className?: string;
+  showAdmin?: boolean;
 }) {
   return (
     <nav className={cn("flex flex-col gap-1 p-4", className)}>
@@ -56,7 +71,7 @@ function SidebarNav({
             href={href}
             onClick={onNavigate}
             className={cn(
-              "flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors",
+              "flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors duration-200",
               active
                 ? "bg-muted text-foreground shadow-sm"
                 : "text-muted-foreground hover:bg-muted/70 hover:text-foreground"
@@ -67,6 +82,21 @@ function SidebarNav({
           </Link>
         );
       })}
+      {showAdmin && (
+        <Link
+          href="/admin"
+          onClick={onNavigate}
+          className={cn(
+            "flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors duration-200",
+            navActive(pathname, "/admin")
+              ? "bg-muted text-foreground shadow-sm"
+              : "text-muted-foreground hover:bg-muted/70 hover:text-foreground"
+          )}
+        >
+          <Shield className="size-4 shrink-0 opacity-80" aria-hidden />
+          Admin
+        </Link>
+      )}
     </nav>
   );
 }
@@ -77,17 +107,29 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   const [authReady, setAuthReady] = useState(false);
   const [authorized, setAuthorized] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [showAdmin, setShowAdmin] = useState(false);
 
   useEffect(() => {
-    if (localStorage.getItem("auth") === "true") {
-      setAuthorized(true);
-    } else {
+    const token = localStorage.getItem("token");
+    const userRaw = localStorage.getItem("user");
+    if (!token || !userRaw) {
       router.replace("/login");
+      setAuthorized(false);
+    } else {
+      setAuthorized(true);
+      try {
+        const u = JSON.parse(userRaw) as { is_admin?: boolean };
+        setShowAdmin(Boolean(u.is_admin));
+      } catch {
+        setShowAdmin(false);
+      }
     }
     setAuthReady(true);
-  }, [router]);
+  }, [router, pathname]);
 
   function handleLogout() {
+    localStorage.removeItem("token");
+    localStorage.removeItem("user");
     localStorage.removeItem("auth");
     router.push("/login");
   }
@@ -111,7 +153,11 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           </Link>
           <p className="mt-1 text-xs text-muted-foreground">Camera control</p>
         </div>
-        <SidebarNav pathname={pathname} className="flex-1" />
+        <SidebarNav
+          pathname={pathname}
+          className="flex-1"
+          showAdmin={showAdmin}
+        />
       </aside>
 
       <div className="flex min-h-screen flex-col md:pl-56">
@@ -134,6 +180,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                 <SidebarNav
                   pathname={pathname}
                   onNavigate={() => setMobileOpen(false)}
+                  showAdmin={showAdmin}
                 />
               </SheetContent>
             </Sheet>

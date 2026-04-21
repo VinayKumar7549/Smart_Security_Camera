@@ -7,7 +7,9 @@ export default function Home() {
   const router = useRouter();
 
   useEffect(() => {
-    if (localStorage.getItem("auth") === "true") {
+    const token = localStorage.getItem("token");
+    const user = localStorage.getItem("user");
+    if (token && user) {
       router.replace("/dashboard");
     } else {
       router.replace("/login");

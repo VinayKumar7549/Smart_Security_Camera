@@ -5,6 +5,7 @@ FastAPI backend for the smart security camera system.
 import errno
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -13,12 +14,25 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+BASE_DIR = Path(__file__).resolve().parent
+try:
+    from dotenv import load_dotenv
+
+    # Prefer server/.env; also load repo-root .env if present (common on Windows).
+    for _env in (BASE_DIR / ".env", BASE_DIR.parent / ".env"):
+        if _env.is_file():
+            load_dotenv(_env, override=True)
+except ImportError:
+    pass
+
 import cv2
-from fastapi import FastAPI, HTTPException
+import auth
+import database
+import notifications
+from fastapi import Depends, FastAPI, HTTPException
+from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
-
-BASE_DIR = Path(__file__).resolve().parent
 ALERTS_PATH = BASE_DIR / "alerts.json"
 RECORDINGS_DIR = BASE_DIR / "recordings"
 COMPLETED_RECORDINGS_PATH = BASE_DIR / "completed_recordings.json"
@@ -58,6 +72,147 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+class LoginBody(BaseModel):
+    username: str
+    password: str
+
+
+class AdminCreateUserBody(BaseModel):
+    username: str = Field(min_length=1)
+    password: str = Field(min_length=1)
+    email: str | None = None
+    phone: str | None = None
+
+
+class AdminUpdateUserBody(BaseModel):
+    username: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    password: str | None = None
+    is_admin: bool | None = None
+    email_notifications: bool | None = None
+
+
+class AssignCameraBody(BaseModel):
+    camera_id: int
+    user_id: int
+
+
+class UserSettingsBody(BaseModel):
+    email_notifications: bool
+
+
+@app.get("/users/me")
+def get_me(user: dict = Depends(auth.get_current_user)):
+    """Current user profile (from database, no password)."""
+    return auth.user_public(user)
+
+
+@app.patch("/users/me/settings")
+def patch_my_settings(
+    body: UserSettingsBody,
+    user: dict = Depends(auth.get_current_user),
+):
+    database.update_user_email_notifications(user["id"], body.email_notifications)
+    updated = database.get_user_by_id(user["id"])
+    if updated is None:
+        raise HTTPException(status_code=500, detail="User not found")
+    return auth.user_public(updated)
+
+
+@app.post("/auth/login")
+def login(body: LoginBody):
+    """Authenticate against SQLite; returns a bearer token and public user fields."""
+    user = database.get_user_by_username(body.username)
+    if user is None or not database.verify_password(body.password, user["password"]):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    token = auth.make_token(user["id"], user["is_admin"])
+    return {"token": token, "user": auth.user_public(user)}
+
+
+@app.get("/admin/users")
+def admin_list_users(_admin: dict = Depends(auth.require_admin)):
+    users = database.get_all_users()
+    return [auth.user_public(u) for u in users]
+
+
+@app.post("/admin/users", status_code=201)
+def admin_create_user(
+    body: AdminCreateUserBody,
+    _admin: dict = Depends(auth.require_admin),
+):
+    try:
+        uid = database.create_user(
+            body.username,
+            body.password,
+            email=body.email,
+            phone=body.phone,
+        )
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(status_code=409, detail="Username already taken") from exc
+    user = database.get_user_by_id(uid)
+    if user is None:
+        raise HTTPException(status_code=500, detail="Failed to load new user")
+    return auth.user_public(user)
+
+
+@app.patch("/admin/users/{user_id}")
+def admin_patch_user(
+    user_id: int,
+    body: AdminUpdateUserBody,
+    _admin: dict = Depends(auth.require_admin),
+):
+    raw = body.model_dump(exclude_unset=True)
+    if "password" in raw and not (raw.get("password") or "").strip():
+        del raw["password"]
+    try:
+        database.admin_apply_user_updates(user_id, raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(status_code=409, detail="Username already taken") from exc
+    user = database.get_user_by_id(user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return auth.user_public(user)
+
+
+@app.delete("/admin/users/{user_id}")
+def admin_delete_user(
+    user_id: int,
+    _admin: dict = Depends(auth.require_admin),
+):
+    if user_id == _admin["id"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete your own account while logged in",
+        )
+    try:
+        database.delete_user(user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True}
+
+
+@app.get("/admin/cameras")
+def admin_list_cameras(_admin: dict = Depends(auth.require_admin)):
+    return database.get_all_cameras()
+
+
+@app.post("/admin/cameras/assign")
+def admin_assign_camera(
+    body: AssignCameraBody,
+    _admin: dict = Depends(auth.require_admin),
+):
+    try:
+        database.assign_camera_to_user(body.camera_id, body.user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(status_code=400, detail="Invalid user id") from exc
+    return {"ok": True}
 
 
 def _replace_with_retry(src: Path, dst: Path) -> bool:
@@ -398,6 +553,15 @@ def run_stream_processor() -> None:
                                 "event_type": "motion_detected",
                             }
                         )
+                        try:
+                            notifications.notify_motion_for_camera(
+                                notifications.resolve_motion_notification_camera_id()
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            print(
+                                f"Motion email notification error: {exc}",
+                                file=sys.stderr,
+                            )
 
             if recording and writer is not None:
                 frame_to_write = original_frame
@@ -440,6 +604,7 @@ def run_stream_processor() -> None:
 @app.on_event("startup")
 def start_stream_processor() -> None:
     """Start stream processing in the background (single ESP32 connection)."""
+    database.init_db()
     load_completed_recordings_from_disk()
     thread = getattr(app.state, "stream_thread", None)
     if thread is not None and thread.is_alive():
