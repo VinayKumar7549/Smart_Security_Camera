@@ -5,6 +5,7 @@ FastAPI backend for the smart security camera system.
 import errno
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -20,6 +21,10 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 BASE_DIR = Path(__file__).resolve().parent
 ALERTS_PATH = BASE_DIR / "alerts.json"
 RECORDINGS_DIR = BASE_DIR / "recordings"
+COMPLETED_RECORDINGS_PATH = BASE_DIR / "completed_recordings.json"
+
+_completed_recordings_lock = threading.Lock()
+_completed_filenames: set[str] = set()
 
 # ESP32-CAM MJPEG endpoint.
 stream_url = "http://10.2.10.176:81/stream"
@@ -74,6 +79,71 @@ def _replace_with_retry(src: Path, dst: Path) -> bool:
             if attempt < _RENAME_ATTEMPTS - 1:
                 time.sleep(_RENAME_DELAY_SEC * (attempt + 1))
     return False
+
+
+def _persist_completed_recordings_to_disk() -> None:
+    """Persist completed filenames; caller must hold _completed_recordings_lock."""
+    payload = json.dumps(sorted(_completed_filenames), indent=2, ensure_ascii=False)
+    parent = COMPLETED_RECORDINGS_PATH.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    temp_file = parent / f"{COMPLETED_RECORDINGS_PATH.stem}.{uuid.uuid4().hex}.tmp"
+    try:
+        with open(temp_file, "w", encoding="utf-8", newline="\n") as tmp_f:
+            tmp_f.write(payload)
+            tmp_f.flush()
+            os.fsync(tmp_f.fileno())
+        replaced = _replace_with_retry(temp_file, COMPLETED_RECORDINGS_PATH)
+        if not replaced:
+            with open(COMPLETED_RECORDINGS_PATH, "w", encoding="utf-8", newline="\n") as out_f:
+                out_f.write(payload)
+                out_f.flush()
+                os.fsync(out_f.fileno())
+    finally:
+        try:
+            if temp_file.exists():
+                temp_file.unlink()
+        except OSError:
+            pass
+
+
+def register_completed_recording(filename: str) -> None:
+    """Expose a recording via the API only after it is fully finalized."""
+    if not filename or not filename.endswith(".mp4"):
+        return
+    if filename.endswith("_fixed.mp4"):
+        return
+    with _completed_recordings_lock:
+        _completed_filenames.add(filename)
+        _persist_completed_recordings_to_disk()
+
+
+def load_completed_recordings_from_disk() -> None:
+    """Load completed set on startup; migrate from folder if JSON is missing."""
+    global _completed_filenames
+    with _completed_recordings_lock:
+        if COMPLETED_RECORDINGS_PATH.is_file():
+            try:
+                with open(COMPLETED_RECORDINGS_PATH, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    _completed_filenames = {
+                        str(x)
+                        for x in data
+                        if isinstance(x, str) and x.endswith(".mp4")
+                    }
+                else:
+                    _completed_filenames = set()
+            except (json.JSONDecodeError, OSError):
+                _completed_filenames = set()
+        else:
+            RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
+            _completed_filenames = {
+                p.name
+                for p in RECORDINGS_DIR.glob("*.mp4")
+                if p.is_file() and not p.name.endswith("_fixed.mp4")
+            }
+            if _completed_filenames:
+                _persist_completed_recordings_to_disk()
 
 
 def _write_alerts_payload(payload: str, tmp_path: Path | None) -> None:
@@ -136,6 +206,61 @@ def schedule_alert_log(entry: dict) -> None:
     threading.Thread(target=_run, daemon=True).start()
 
 
+def _run_ffmpeg_after_recording(input_path: str) -> None:
+    """Run ffmpeg once after VideoWriter.release(); register only if conversion succeeds."""
+    if not input_path or not os.path.isfile(input_path):
+        return
+
+    filename = Path(input_path).name
+    output_path = input_path.replace(".mp4", "_fixed.mp4")
+
+    print("Starting ffmpeg conversion...")
+
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-i",
+                input_path,
+                "-vcodec",
+                "libx264",
+                "-acodec",
+                "aac",
+                output_path,
+                "-y",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        print("FFMPEG FAILED: ffmpeg not found on PATH")
+        return
+    except OSError as exc:
+        print(f"FFMPEG FAILED: {exc}")
+        return
+
+    print("FFMPEG ERROR:", result.stderr)
+
+    if os.path.exists(output_path):
+        try:
+            os.remove(input_path)
+            os.rename(output_path, input_path)
+        except OSError as exc:
+            print(f"FFMPEG FAILED: {exc}")
+            try:
+                if os.path.isfile(output_path):
+                    os.remove(output_path)
+            except OSError:
+                pass
+            return
+        print("Video converted successfully")
+        register_completed_recording(filename)
+    else:
+        print("FFMPEG FAILED")
+
+
 def run_stream_processor() -> None:
     """Continuously capture frames, detect motion, and record clips."""
     global latest_frame
@@ -145,7 +270,26 @@ def run_stream_processor() -> None:
 
     prev_gray = None
     writer = None
+    recording = False
+    recording_path = None
+    recording_size = None
     last_motion_time = None
+
+    def stop_recording_and_convert() -> None:
+        """Release writer, then run ffmpeg exactly once (not inside the frame loop)."""
+        nonlocal writer, recording, recording_path, recording_size, last_motion_time
+        if not recording or writer is None:
+            return
+        path_to_convert = recording_path
+        writer.release()
+        print("Recording saved successfully", file=sys.stderr)
+        writer = None
+        recording_path = None
+        recording_size = None
+        last_motion_time = None
+        recording = False
+        if path_to_convert:
+            _run_ffmpeg_after_recording(path_to_convert)
 
     try:
         while True:
@@ -158,10 +302,7 @@ def run_stream_processor() -> None:
                 time.sleep(2)
                 cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
                 prev_gray = None
-                if writer is not None:
-                    writer.release()
-                    writer = None
-                    last_motion_time = None
+                stop_recording_and_convert()
                 continue
 
             ok, frame = cap.read()
@@ -171,10 +312,7 @@ def run_stream_processor() -> None:
                 time.sleep(2)
                 cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
                 prev_gray = None
-                if writer is not None:
-                    writer.release()
-                    writer = None
-                    last_motion_time = None
+                stop_recording_and_convert()
                 continue
 
             h, w = frame.shape[:2]
@@ -229,14 +367,16 @@ def run_stream_processor() -> None:
             now = time.monotonic()
             if motion_detected:
                 last_motion_time = now
-                if writer is None:
+                if not recording:
                     RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
                     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                     out_path = str(RECORDINGS_DIR / f"recording_{ts}.mp4")
-                    height, width = original_frame.shape[:2]
+                    width = original_frame.shape[1]
+                    height = original_frame.shape[0]
                     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                    recording_size = (width, height)
                     writer = cv2.VideoWriter(
-                        out_path, fourcc, OUTPUT_FPS, (width, height)
+                        out_path, fourcc, OUTPUT_FPS, recording_size
                     )
                     if not writer.isOpened():
                         print(
@@ -244,8 +384,13 @@ def run_stream_processor() -> None:
                             file=sys.stderr,
                         )
                         writer = None
+                        recording_path = None
+                        recording_size = None
                         last_motion_time = None
+                        recording = False
                     else:
+                        recording = True
+                        recording_path = out_path
                         schedule_alert_log(
                             {
                                 "timestamp": datetime.now().isoformat(timespec="seconds"),
@@ -254,16 +399,22 @@ def run_stream_processor() -> None:
                             }
                         )
 
-            if writer is not None:
-                writer.write(original_frame)
+            if recording and writer is not None:
+                frame_to_write = original_frame
+                if recording_size is not None and (
+                    frame_to_write.shape[1] != recording_size[0]
+                    or frame_to_write.shape[0] != recording_size[1]
+                ):
+                    frame_to_write = cv2.resize(
+                        frame_to_write, recording_size, interpolation=cv2.INTER_AREA
+                    )
+                writer.write(frame_to_write)
                 if last_motion_time is not None and (
                     now - last_motion_time >= NO_MOTION_SECONDS
                 ):
-                    writer.release()
-                    writer = None
-                    last_motion_time = None
+                    stop_recording_and_convert()
 
-            if writer is not None:
+            if recording and writer is not None:
                 cv2.putText(
                     display_frame,
                     "Recording...",
@@ -282,14 +433,14 @@ def run_stream_processor() -> None:
     except Exception as exc:  # noqa: BLE001
         print(f"Error: stream processor stopped unexpectedly: {exc}", file=sys.stderr)
     finally:
-        if writer is not None:
-            writer.release()
+        stop_recording_and_convert()
         cap.release()
 
 
 @app.on_event("startup")
 def start_stream_processor() -> None:
     """Start stream processing in the background (single ESP32 connection)."""
+    load_completed_recordings_from_disk()
     thread = getattr(app.state, "stream_thread", None)
     if thread is not None and thread.is_alive():
         return
@@ -310,16 +461,6 @@ def _recording_file_path(filename: str) -> Path:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid filename") from exc
     return candidate
-
-
-def _video_media_type(name: str) -> str:
-    ext = name.lower().rsplit(".", 1)[-1] if "." in name else ""
-    return {
-        "avi": "video/x-msvideo",
-        "mp4": "video/mp4",
-        "webm": "video/webm",
-        "mov": "video/quicktime",
-    }.get(ext, "application/octet-stream")
 
 
 @app.get("/alerts")
@@ -345,12 +486,23 @@ def get_alerts():
 
 @app.get("/recordings")
 def list_recordings():
-    """List filenames in the recordings folder."""
+    """List finalized recordings only (not files still recording or converting)."""
     if not RECORDINGS_DIR.is_dir():
         return []
     try:
-        names = sorted(p.name for p in RECORDINGS_DIR.iterdir() if p.is_file())
-        return names
+        with _completed_recordings_lock:
+            stale = [
+                n
+                for n in _completed_filenames
+                if not (RECORDINGS_DIR / n).is_file()
+            ]
+            for n in stale:
+                _completed_filenames.discard(n)
+            if stale:
+                _persist_completed_recordings_to_disk()
+            return sorted(
+                n for n in _completed_filenames if (RECORDINGS_DIR / n).is_file()
+            )
     except OSError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -358,13 +510,18 @@ def list_recordings():
 @app.get("/recordings/{filename}")
 def get_recording(filename: str):
     """Stream a recording file (e.g. for browser playback)."""
+    with _completed_recordings_lock:
+        if filename not in _completed_filenames:
+            raise HTTPException(status_code=404, detail="Recording not found")
     path = _recording_file_path(filename)
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Recording not found")
+    if path.suffix.lower() != ".mp4":
+        raise HTTPException(status_code=400, detail="Only .mp4 recordings are supported")
     try:
         return FileResponse(
             path,
-            media_type=_video_media_type(filename),
+            media_type="video/mp4",
             filename=filename,
         )
     except OSError as exc:

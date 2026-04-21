@@ -1,7 +1,12 @@
 [
   {
-    "timestamp": "2026-04-21T20:01:29",
-    "video_filename": "recording_20260421_200129.mp4",
+    "timestamp": "2026-04-22T01:47:16",
+    "video_filename": "recording_20260422_014716.mp4",
+    "event_type": "motion_detected"
+  },
+  {
+    "timestamp": "2026-04-22T01:48:15",
+    "video_filename": "recording_20260422_014815.mp4",
     "event_type": "motion_detected"
   }
 ]
