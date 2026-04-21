@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState, startTransition } from "react";
 
 const API_BASE = "http://127.0.0.1:8000";
-const STREAM_URL = "http://10.2.10.176:81/stream";
+// const STREAM_URL = "http://10.2.10.176:81/stream";
 
 type AlertItem = {
   timestamp: string;
@@ -88,9 +88,9 @@ export default function Home() {
             <div className="w-full max-w-4xl overflow-hidden rounded-xl border border-slate-700/80 bg-slate-900 shadow-xl shadow-black/40">
               {/* eslint-disable-next-line @next/next/no-img-element -- MJPEG stream needs native img */}
               <img
-                src={STREAM_URL}
-                alt="Live camera feed"
-                className="mx-auto block h-auto w-full max-h-[min(70vh,720px)] object-contain"
+                src="http://127.0.0.1:8000/live-stream"
+                alt="Live stream"
+                className="mx-auto block rounded-lg max-w-[600px] w-full"
               />
             </div>
           </div>

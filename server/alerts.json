@@ -1,52 +1,7 @@
 [
   {
-    "timestamp": "2026-04-20T23:32:41",
-    "video_filename": "recording_20260420_233241.avi",
-    "event_type": "motion_detected"
-  },
-  {
-    "timestamp": "2026-04-20T23:33:20",
-    "video_filename": "recording_20260420_233320.avi",
-    "event_type": "motion_detected"
-  },
-  {
-    "timestamp": "2026-04-20T23:34:08",
-    "video_filename": "recording_20260420_233408.avi",
-    "event_type": "motion_detected"
-  },
-  {
-    "timestamp": "2026-04-20T23:34:14",
-    "video_filename": "recording_20260420_233414.avi",
-    "event_type": "motion_detected"
-  },
-  {
-    "timestamp": "2026-04-20T23:34:22",
-    "video_filename": "recording_20260420_233422.avi",
-    "event_type": "motion_detected"
-  },
-  {
-    "timestamp": "2026-04-21T14:10:33",
-    "video_filename": "recording_20260421_141033.avi",
-    "event_type": "motion_detected"
-  },
-  {
-    "timestamp": "2026-04-21T14:10:47",
-    "video_filename": "recording_20260421_141047.avi",
-    "event_type": "motion_detected"
-  },
-  {
-    "timestamp": "2026-04-21T14:11:03",
-    "video_filename": "recording_20260421_141103.avi",
-    "event_type": "motion_detected"
-  },
-  {
-    "timestamp": "2026-04-21T14:17:27",
-    "video_filename": "recording_20260421_141727.mp4",
-    "event_type": "motion_detected"
-  },
-  {
-    "timestamp": "2026-04-21T14:18:54",
-    "video_filename": "recording_20260421_141854.mp4",
+    "timestamp": "2026-04-21T20:01:29",
+    "video_filename": "recording_20260421_200129.mp4",
     "event_type": "motion_detected"
   }
 ]

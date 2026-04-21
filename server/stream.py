@@ -19,6 +19,10 @@ import cv2
 # ESP32-CAM MJPEG endpoint (replace <ip> with your board's IP address)
 stream_url = "http://10.2.10.176:81/stream"
 
+# Shared latest processed frame for API access.
+latest_frame = None
+frame_lock = threading.Lock()
+
 # Max width for display; height scales to preserve aspect ratio
 MAX_DISPLAY_WIDTH = 960
 
@@ -150,8 +154,9 @@ def schedule_alert_log(entry: dict) -> None:
     threading.Thread(target=_run, daemon=True).start()
 
 
-def main() -> None:
+def main(show_window: bool = True) -> None:
     """Open the MJPEG stream, show frames, and release resources on exit."""
+    global latest_frame
     # OpenCV is C-extension backed; static analysis does not list all attributes.
     # pylint: disable=no-member
     dilate_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
@@ -192,10 +197,13 @@ def main() -> None:
 
             if prev_gray is None:
                 prev_gray = gray
-                cv2.imshow(window_name, display_frame)
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord("q"):
-                    break
+                with frame_lock:
+                    latest_frame = display_frame.copy()
+                if show_window:
+                    cv2.imshow(window_name, display_frame)
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == ord("q"):
+                        break
                 continue
 
             frame_diff = cv2.absdiff(prev_gray, gray)
@@ -281,17 +289,22 @@ def main() -> None:
 
             prev_gray = gray
 
-            cv2.imshow(window_name, display_frame)
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord("q"):
-                break
+            with frame_lock:
+                latest_frame = display_frame.copy()
+
+            if show_window:
+                cv2.imshow(window_name, display_frame)
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord("q"):
+                    break
     except KeyboardInterrupt:
         pass
     finally:
         if writer is not None:
             writer.release()
         cap.release()
-        cv2.destroyAllWindows()
+        if show_window:
+            cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
