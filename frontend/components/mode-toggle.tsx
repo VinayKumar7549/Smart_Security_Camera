@@ -16,7 +16,12 @@ export function ModeToggle() {
 
   if (!mounted) {
     return (
-      <Button variant="outline" size="icon-sm" className="rounded-xl shadow-md" aria-hidden>
+      <Button
+        variant="outline"
+        size="icon-sm"
+        className="rounded-xl shadow-md transition-colors duration-300"
+        aria-hidden
+      >
         <Sun className="size-4 opacity-0" />
       </Button>
     );
@@ -29,7 +34,7 @@ export function ModeToggle() {
       type="button"
       variant="outline"
       size="icon-sm"
-      className="rounded-xl shadow-md"
+      className="rounded-xl shadow-md transition-all duration-300 ease-out hover:scale-105 active:scale-100"
       onClick={() => setTheme(isDark ? "light" : "dark")}
       aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
     >
