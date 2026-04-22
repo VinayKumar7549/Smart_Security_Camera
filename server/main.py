@@ -546,16 +546,18 @@ def run_stream_processor() -> None:
                     else:
                         recording = True
                         recording_path = out_path
+                        _rec_filename = Path(out_path).name
                         schedule_alert_log(
                             {
                                 "timestamp": datetime.now().isoformat(timespec="seconds"),
-                                "video_filename": Path(out_path).name,
+                                "video_filename": _rec_filename,
                                 "event_type": "motion_detected",
                             }
                         )
                         try:
                             notifications.notify_motion_for_camera(
-                                notifications.resolve_motion_notification_camera_id()
+                                notifications.resolve_motion_notification_camera_id(),
+                                recording_filename=_rec_filename,
                             )
                         except Exception as exc:  # noqa: BLE001
                             print(
@@ -626,6 +628,49 @@ def _recording_file_path(filename: str) -> Path:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid filename") from exc
     return candidate
+
+
+@app.get("/cameras/status")
+def get_camera_status():
+    """Return camera online/offline status based on stream thread and frame availability."""
+    thread = getattr(app.state, "stream_thread", None)
+    with frame_lock:
+        has_frame = latest_frame is not None
+    cameras = database.get_all_cameras()
+    result = []
+    for cam in cameras:
+        result.append({
+            "id": cam["id"],
+            "camera_name": cam["camera_name"],
+            "assigned_user_id": cam.get("assigned_user_id"),
+            "online": bool(thread and thread.is_alive() and has_frame),
+        })
+    return result
+
+
+@app.get("/alerts/count")
+def get_alert_count():
+    """Return the number of alerts in the last 24 hours."""
+    if not ALERTS_PATH.is_file():
+        return {"count": 0}
+    try:
+        with open(ALERTS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {"count": 0}
+    if not isinstance(data, list):
+        return {"count": 0}
+    now = datetime.now()
+    count = 0
+    for entry in data:
+        ts = entry.get("timestamp", "")
+        try:
+            alert_time = datetime.fromisoformat(ts)
+            if (now - alert_time).total_seconds() < 86400:
+                count += 1
+        except (ValueError, TypeError):
+            count += 1
+    return {"count": count, "total": len(data)}
 
 
 @app.get("/alerts")

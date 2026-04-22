@@ -1,47 +1,64 @@
 "use client";
 
 import { useCallback, useEffect, useState, startTransition } from "react";
+import {
+  getAlerts,
+  getRecordings,
+  getCameraStatus,
+  getAlertCount,
+  getHealth,
+  type AlertItem,
+  type CameraStatus,
+} from "@/lib/api";
 
-const API_BASE = "http://127.0.0.1:8000";
-
-export type AlertItem = {
-  timestamp: string;
-  video_filename: string;
-  event_type?: string;
-};
+export type { AlertItem };
 
 export function useDashboardData(enabled: boolean) {
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
   const [recordings, setRecordings] = useState<string[]>([]);
+  const [cameras, setCameras] = useState<CameraStatus[]>([]);
+  const [alertCount, setAlertCount] = useState(0);
+  const [totalAlerts, setTotalAlerts] = useState(0);
+  const [streamOnline, setStreamOnline] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const loadData = useCallback(async () => {
     const errors: string[] = [];
 
     try {
-      const alertsRes = await fetch(`${API_BASE}/alerts`);
-      if (alertsRes.ok) {
-        const data: unknown = await alertsRes.json();
-        setAlerts(Array.isArray(data) ? (data as AlertItem[]) : []);
-      } else if (alertsRes.status === 404) {
-        setAlerts([]);
-      } else {
-        errors.push(`Alerts (${alertsRes.status})`);
-      }
+      const data = await getAlerts();
+      setAlerts(data);
     } catch {
       errors.push("Alerts unreachable");
     }
 
     try {
-      const recRes = await fetch(`${API_BASE}/recordings`);
-      if (recRes.ok) {
-        const recData: unknown = await recRes.json();
-        setRecordings(Array.isArray(recData) ? (recData as string[]) : []);
-      } else {
-        errors.push(`Recordings (${recRes.status})`);
-      }
+      const data = await getRecordings();
+      setRecordings(data);
     } catch {
       errors.push("Recordings unreachable");
+    }
+
+    try {
+      const data = await getCameraStatus();
+      setCameras(data);
+    } catch {
+      /* silent */
+    }
+
+    try {
+      const data = await getAlertCount();
+      setAlertCount(data.count);
+      setTotalAlerts(data.total);
+    } catch {
+      /* silent */
+    }
+
+    try {
+      const data = await getHealth();
+      setStreamOnline(data.stream_thread_alive && data.live_frame_available);
+    } catch {
+      setStreamOnline(false);
     }
 
     setLoadError(errors.length > 0 ? errors.join(" · ") : null);
@@ -60,5 +77,13 @@ export function useDashboardData(enabled: boolean) {
     return () => clearInterval(id);
   }, [enabled, loadData]);
 
-  return { alerts, recordings, loadError };
+  return {
+    alerts,
+    recordings,
+    cameras,
+    alertCount,
+    totalAlerts,
+    streamOnline,
+    loadError,
+  };
 }

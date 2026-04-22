@@ -16,8 +16,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Smart Security Camera Dashboard",
-  description: "Live stream, alerts, and security recordings",
+  title: "SentinelVue — Smart Security Dashboard",
+  description:
+    "Professional security camera monitoring with live streaming, motion alerts, and recording management.",
 };
 
 export default function RootLayout({
